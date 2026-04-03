@@ -79,6 +79,9 @@ parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints
 parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
 args = parser.parse_args()
 user_config = vars(args).copy()  # for logging
+#modified
+parser.add_argument("--use-disentangled-mlp", type=str, default="False", help="enable head-expert disentangled MLPs")
+parser.add_argument("--disentangled_mlp_ratio", type=float, default=2.0, help="expansion ratio for disentangled MLP")
 # -----------------------------------------------------------------------------
 # Compute init and wandb logging
 
@@ -133,10 +136,13 @@ def build_model_meta(depth):
     base_dim = depth * args.aspect_ratio
     model_dim = ((base_dim + args.head_dim - 1) // args.head_dim) * args.head_dim
     num_heads = model_dim // args.head_dim
+    use_mlp = args.use_disentangled_mlp.lower()
     config = GPTConfig(
         sequence_len=args.max_seq_len, vocab_size=vocab_size,
         n_layer=depth, n_head=num_heads, n_kv_head=num_heads, n_embd=model_dim,
         window_pattern=args.window_pattern,
+        use_disentangled_mlp=use_mlp,
+        disentangled_mlp_ratio=args.disentangled_mlp_ratio,
     )
     with torch.device("meta"):
         model_meta = GPT(config)
