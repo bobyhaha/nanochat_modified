@@ -143,44 +143,46 @@ class MLP(nn.Module):
 
 class DisentangledMLP(nn.Module):
     """
-    Split x into heads, apply an independent MLP to each head chunk, then concat back.
-
-    Input/output: (B, T, n_embd)
-    Internal:     (B, T, n_head, head_dim)
+    Efficient implementation of a per-head MLP.
+    Splits the embedding into heads and applies an independent MLP to each.
+    Uses batched matmul to avoid Python loops.
     """
     def __init__(self, config):
         super().__init__()
-        assert config.n_embd % config.n_head == 0
         self.n_head = config.n_head
         self.head_dim = config.n_embd // config.n_head
+        self.hidden_dim = int(config.disentangled_mlp_ratio * self.head_dim)
+        
+        # We store weights in (Heads, In_Dim, Out_Dim) format
+        # This allows us to use torch.matmul(x, weight) where x is (B, T, Heads, Head_Dim)
+        self.w_fc = nn.Parameter(torch.empty(self.n_head, self.head_dim, self.hidden_dim))
+        self.w_proj = nn.Parameter(torch.empty(self.n_head, self.hidden_dim, self.head_dim))
+        
+        self.reset_parameters()
 
-        hidden_per_head = int(config.disentangled_mlp_ratio * self.head_dim)
-        hidden_per_head = max(hidden_per_head, 1)
-
-        # one independent MLP per head
-        self.c_fc = nn.ModuleList([
-            Linear(self.head_dim, hidden_per_head, bias=False)
-            for _ in range(self.n_head)
-        ])
-        self.c_proj = nn.ModuleList([
-            Linear(hidden_per_head, self.head_dim, bias=False)
-            for _ in range(self.n_head)
-        ])
+    def reset_parameters(self):
+        # Using a scaled uniform init matching your GPT.init_weights logic
+        s = 3**0.5 * (self.head_dim)**-0.5
+        nn.init.uniform_(self.w_fc, -s * 0.4, s * 0.4)
+        nn.init.zeros_(self.w_proj)
 
     def forward(self, x):
         B, T, C = x.shape
+        # Reshape to (Batch, Time, Heads, Head_Dim)
         x = x.view(B, T, self.n_head, self.head_dim)
-
-        ys = []
-        for h in range(self.n_head):
-            xh = x[:, :, h, :]                  # (B, T, head_dim)
-            yh = self.c_fc[h](xh)
-            yh = F.relu(yh).square()
-            yh = self.c_proj[h](yh)            # (B, T, head_dim)
-            ys.append(yh)
-
-        y = torch.cat(ys, dim=-1)              # (B, T, n_embd)
-        return y
+        
+        # 1. Expand/Up-project: (B, T, H, D) @ (H, D, Hidden) -> (B, T, H, Hidden)
+        # Note: torch.matmul handles the batch/time dims and matches on the 'H' dim automatically
+        x = torch.matmul(x, self.w_fc.to(x.dtype))
+        
+        # 2. Activation: Relu^2
+        x = F.relu(x).square()
+        
+        # 3. Down-project: (B, T, H, Hidden) @ (H, Hidden, D) -> (B, T, H, D)
+        x = torch.matmul(x, self.w_proj.to(x.dtype))
+        
+        # 4. Merge heads back into C
+        return x.reshape(B, T, C)
 
 
 
