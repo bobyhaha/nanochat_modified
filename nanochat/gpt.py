@@ -142,44 +142,51 @@ class MLP(nn.Module):
         return x
 
 class DisentangledMLP(nn.Module):
+    """
+    Each attention head gets its own private 'Expert' MLP.
+    No information is shared between heads within this layer.
+    """
     def __init__(self, config):
         super().__init__()
         self.n_head = config.n_head
         self.head_dim = config.n_embd // config.n_head
+        # The 'expert' hidden capacity per head
         self.hidden_dim = int(config.disentangled_mlp_ratio * self.head_dim)
         
-        # We store as a 2D matrix so Muon treats it as one big orthogonal block
-        # Shape: (Heads * Head_Dim, Hidden_Dim)
+        # We define these as 2D matrices so Muon handles them as standard blocks.
+        # w_fc: (Total_In, Hidden_Per_Head) -> (H * D, Hidden_D)
         self.w_fc = nn.Parameter(torch.empty(self.n_head * self.head_dim, self.hidden_dim))
+        # w_proj: (Total_Hidden, D_Per_Head) -> (H * Hidden_D, D)
         self.w_proj = nn.Parameter(torch.empty(self.n_head * self.hidden_dim, self.head_dim))
         
         self.reset_parameters()
 
     def reset_parameters(self):
+        # Initializing with a scale that accounts for the head-dim
         s = 3**0.5 * (self.head_dim)**-0.5
         nn.init.uniform_(self.w_fc, -s * 0.4, s * 0.4)
         nn.init.zeros_(self.w_proj)
 
     def forward(self, x):
-        B, T, C = x.shape
+        B, T, C = x.shape # C = n_head * head_dim
         
-        # 1. Up-project: (B, T, C) @ (C, Hidden_Total) -> (B, T, Hidden_Total)
-        # Note: Since C = n_head * head_dim, this is mathematically 
-        # identical to the disentangled version if we treat it as a block-diagonal matmul,
-        # BUT standard MatMul here mixes heads. 
-        # To KEEP it disentangled, we MUST use the view trick:
-        
+        # 1. Reshape to process heads independently
         x = x.view(B, T, self.n_head, self.head_dim)
+        
+        # 2. Up-project: Each head (D) gets multiplied by its own expert slice of w_fc
         # Weight view: (n_head, head_dim, hidden_dim)
         w_fc = self.w_fc.view(self.n_head, self.head_dim, self.hidden_dim)
         x = torch.matmul(x, w_fc.to(x.dtype))
         
+        # 3. Activation (Expert non-linearity)
         x = F.relu(x).square()
         
-        # Down-project with view trick
+        # 4. Down-project: Map expert back to head dimension
+        # Weight view: (n_head, hidden_dim, head_dim)
         w_proj = self.w_proj.view(self.n_head, self.hidden_dim, self.head_dim)
         x = torch.matmul(x, w_proj.to(x.dtype))
         
+        # 5. Merge experts back into the residual stream
         return x.reshape(B, T, C)
 
 
