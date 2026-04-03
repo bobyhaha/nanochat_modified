@@ -75,13 +75,14 @@ parser.add_argument("--core-metric-every", type=int, default=2000, help="evaluat
 parser.add_argument("--core-metric-max-per-task", type=int, default=500, help="examples per task for CORE metric")
 parser.add_argument("--sample-every", type=int, default=2000, help="sample from model every N steps (-1 = disable)")
 parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints every N steps (-1 = only at end)")
+#modified
+parser.add_argument("--use-disentangled-mlp", type=str, default="False", help="enable head-expert disentangled MLPs")
+parser.add_argument("--disentangled_mlp_ratio", type=float, default=2.0, help="expansion ratio for disentangled MLP")
 # Output
 parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
 args = parser.parse_args()
 user_config = vars(args).copy()  # for logging
-#modified
-parser.add_argument("--use-disentangled-mlp", type=str, default="False", help="enable head-expert disentangled MLPs")
-parser.add_argument("--disentangled_mlp_ratio", type=float, default=2.0, help="expansion ratio for disentangled MLP")
+
 # -----------------------------------------------------------------------------
 # Compute init and wandb logging
 
