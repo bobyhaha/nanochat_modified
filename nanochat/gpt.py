@@ -37,6 +37,9 @@ class GPTConfig:
     # Characters: L=long (full context), S=short (quarter context)
     # Examples: "L"=all full context, "SL"=alternating, "SSL"=two short then one long
     window_pattern: str = "SSSL"
+    use_disentangled_mlp: bool = True
+    disentangled_mlp_ratio: float = 2
+
 
 
 def norm(x):
@@ -138,12 +141,57 @@ class MLP(nn.Module):
         x = self.c_proj(x)
         return x
 
+class DisentangledMLP(nn.Module):
+    """
+    Split x into heads, apply an independent MLP to each head chunk, then concat back.
+
+    Input/output: (B, T, n_embd)
+    Internal:     (B, T, n_head, head_dim)
+    """
+    def __init__(self, config):
+        super().__init__()
+        assert config.n_embd % config.n_head == 0
+        self.n_head = config.n_head
+        self.head_dim = config.n_embd // config.n_head
+
+        hidden_per_head = int(config.disentangled_mlp_ratio * self.head_dim)
+        hidden_per_head = max(hidden_per_head, 1)
+
+        # one independent MLP per head
+        self.c_fc = nn.ModuleList([
+            Linear(self.head_dim, hidden_per_head, bias=False)
+            for _ in range(self.n_head)
+        ])
+        self.c_proj = nn.ModuleList([
+            Linear(hidden_per_head, self.head_dim, bias=False)
+            for _ in range(self.n_head)
+        ])
+
+    def forward(self, x):
+        B, T, C = x.shape
+        x = x.view(B, T, self.n_head, self.head_dim)
+
+        ys = []
+        for h in range(self.n_head):
+            xh = x[:, :, h, :]                  # (B, T, head_dim)
+            yh = self.c_fc[h](xh)
+            yh = F.relu(yh).square()
+            yh = self.c_proj[h](yh)            # (B, T, head_dim)
+            ys.append(yh)
+
+        y = torch.cat(ys, dim=-1)              # (B, T, n_embd)
+        return y
+
+
 
 class Block(nn.Module):
     def __init__(self, config, layer_idx):
         super().__init__()
         self.attn = CausalSelfAttention(config, layer_idx)
-        self.mlp = MLP(config)
+        if config.use_disentangled_mlp:
+            self.mlp = DisentangledMLP(config)
+        else:
+            self.mlp = MLP(config)
 
     def forward(self, x, ve, cos_sin, window_size, kv_cache):
         x = x + self.attn(norm(x), ve, cos_sin, window_size, kv_cache)
